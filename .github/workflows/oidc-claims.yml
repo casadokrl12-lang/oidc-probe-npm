@@ -81,7 +81,7 @@ jobs:
         run: |
           set -uo pipefail
           TOKEN=$(cat /tmp/id_token)
-          for P in "${{ inputs.package }}" axios lodash express npm prettier typescript semver chalk; do
+          for P in "${{ inputs.package }}" axios vite next playwright nx astro eslint; do
             ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$P")
             CODE=$(curl -sS -o /tmp/r.json -w '%{http_code}' -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
