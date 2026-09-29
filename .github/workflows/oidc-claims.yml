@@ -1,0 +1,103 @@
+name: oidc-claims-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'npm package name for the exchange probe'
+        required: true
+        default: axios
+      extra_aud:
+        description: 'optional list of extra audiences to request'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DEFAULT_AUD: npm:registry.npmjs.org
+  EXTRA_AUD: ${{ inputs.extra_aud }}
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint id_token (aud=npm:registry.npmjs.org)
+        run: |
+          set -euo pipefail
+          RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm%3Aregistry.npmjs.org")
+          echo "$RESP" | jq -r '.value' > /tmp/id_token
+          echo "=== REQUEST URL (redacted token) ==="
+          echo "audience=npm:registry.npmjs.org"
+          echo "=== id_token header ==="
+          jq -R 'split(".")[0]' /tmp/id_token | tr -d '"' | base64 -d 2>/dev/null
+          echo
+          echo "=== id_token payload (ALL claims) ==="
+          jq -R 'split(".")[1]' /tmp/id_token | tr -d '"' | base64 -d 2>/dev/null | jq .
+          echo
+          echo "=== which claims exist ==="
+          jq -R 'split(".")[1]' /tmp/id_token | tr -d '"' | base64 -d 2>/dev/null | jq -r 'keys[]'
+
+      - name: Extra audiences mint (if requested)
+        if: env.EXTRA_AUD != ''
+        run: |
+          set -euo pipefail
+          for a in $(echo "$EXTRA_AUD" | tr ',' ' '); do
+            echo "--- requesting audience=$a ---"
+            curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$a")" \
+              | jq -r '.value' | awk -F. '{print $2}' | base64 -d 2>/dev/null | jq -c .
+          done
+
+      - name: Exchange against npm registry (read-only, no publish)
+        run: |
+          set -euo pipefail
+          PKG="${{ inputs.package }}"
+          TOKEN=$(cat /tmp/id_token)
+          echo "=== POST /-/npm/v1/oidc/token/exchange/package/${PKG} ==="
+          CODE=$(curl -sS -o /tmp/exchange.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'User-Agent: npm/11.6.0 node/v22.14.0 linux x64 workspaces/false' \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${PKG}")
+          echo "HTTP ${CODE}"
+          jq . /tmp/exchange.json 2>/dev/null || cat /tmp/exchange.json
+          echo
+          echo "=== redacted token introspection (if any) ==="
+          T=$(jq -r '.token // empty' /tmp/exchange.json 2>/dev/null)
+          if [ -n "$T" ]; then
+            echo "token length: ${#T}"
+            echo "token prefix: ${T:0:4}"
+            echo "$T" | awk -F. '{print $2}' | base64 -d 2>/dev/null | jq . || true
+          else
+            echo "no token returned"
+          fi
+
+      - name: Multi-package response matrix
+        run: |
+          set -euo pipefail
+          TOKEN=$(cat /tmp/id_token)
+          for P in axios lodash express this-package-does-not-exist-zzz999 "@types/node" npm; do
+            ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$P")
+            CODE=$(curl -sS -o /tmp/r.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H 'User-Agent: npm/11.6.0 node/v22.14.0 linux x64 workspaces/false' \
+              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${ENC}")
+            printf '%-40s HTTP %s  %s\n' "$P" "$CODE" "$(head -c 200 /tmp/r.json)"
+            sleep 2
+          done
+
+      - name: Replay / single-use test (exchange twice with same id_token)
+        run: |
+          set -euo pipefail
+          TOKEN=$(cat /tmp/id_token)
+          for i in 1 2 3; do
+            CODE=$(curl -sS -o /tmp/rr.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H 'User-Agent: npm/11.6.0 node/v22.14.0 linux x64 workspaces/false' \
+              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${{ inputs.package }}")
+            printf 'attempt %s: HTTP %s %s\n' "$i" "$CODE" "$(head -c 160 /tmp/rr.json)"
+            sleep 2
+          done
